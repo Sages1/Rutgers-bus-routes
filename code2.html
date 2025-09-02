@@ -623,3 +623,150 @@
     findBtn.addEventListener("click", onFind);
     originEl.addEventListener("keydown", e => { if (e.key === "Enter") onFind(); });
     destEl.addEventListener("keydown",
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Rutgers NB Live Bus Route Finder</h1>
+    <div id="status" class="badge">Initializing…</div>
+  </header>
+
+  <div class="grid">
+    <section class="panel col-8">
+      <div class="row">
+        <div>
+          <label for="origin">Origin stop</label>
+          <input list="stops" id="origin" placeholder="e.g., College Avenue Student Center" autocomplete="off" />
+        </div>
+        <div>
+          <label for="destination">Destination stop</label>
+          <input list="stops" id="destination" placeholder="e.g., Busch Student Center" autocomplete="off" />
+        </div>
+      </div>
+      <datalist id="stops"></datalist>
+
+      <div class="row" style="margin-top: 10px;">
+        <div class="row" style="flex: 2;">
+          <div>
+            <label for="transferPenalty">Transfer penalty</label>
+            <select id="transferPenalty">
+              <option value="20" selected>High</option>
+              <option value="10">Medium</option>
+              <option value="5">Low</option>
+              <option value="1">Minimal</option>
+            </select>
+          </div>
+          <div>
+            <label for="loopEdges">Treat loop routes as loops</label>
+            <select id="loopEdges">
+              <option value="auto" selected>Auto (detect “Loop”)</option>
+              <option value="on">Always</option>
+              <option value="off">Never</option>
+            </select>
+          </div>
+        </div>
+        <button id="findBtn">Find Best Route</button>
+        <button id="swapBtn" class="secondary" title="Swap origin and destination">Swap</button>
+      </div>
+
+      <div class="hint">
+        <span>Type a stop name and press Enter. Use <span class="kbd">Tab</span> to accept a suggestion.</span>
+      </div>
+
+      <div id="results"></div>
+      <div id="liveEta"></div>
+    </section>
+
+    <aside class="panel col-4">
+      <div class="row" style="align-items:center; justify-content: space-between;">
+        <h3 style="margin: 0;">All Routes</h3>
+        <button id="refreshBtn" class="secondary" style="max-width:140px;">Refresh live data</button>
+      </div>
+      <div id="routePills" style="margin-top: 6px;"></div>
+      <div class="divider"></div>
+      <div class="small">
+        Live data cached briefly to reduce load. If live fetch fails, the app falls back to the static Rutgers routes.
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const statusEl = document.getElementById("status");
+  const originEl = document.getElementById("origin");
+  const destEl = document.getElementById("destination");
+  const findBtn = document.getElementById("findBtn");
+  const swapBtn = document.getElementById("swapBtn");
+  const refreshBtn = document.getElementById("refreshBtn");
+  const resultsEl = document.getElementById("results");
+  const liveEtaEl = document.getElementById("liveEta");
+  const datalist = document.getElementById("stops");
+  const penaltyEl = document.getElementById("transferPenalty");
+  const loopEdgesEl = document.getElementById("loopEdges");
+  const routePillsEl = document.getElementById("routePills");
+
+  // --- Static fallback routes ---
+  const staticRawRoutes = { /* ... your static routes object ... */ };
+
+  // --- Canonicalization, graph building, fuzzy matching, pathfinding ---
+  // (Insert your existing helper functions here: canonicalize, rebuildIndexes, findBestPath, etc.)
+
+  // --- Robust Passio GO fetch ---
+  async function fetchPassioData() {
+    const url = "https://passiogo.com/mapGetData.php?agency=Rutgers";
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch(url, { signal: controller.signal, cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      localStorage.setItem("passioCache", JSON.stringify({ ts: Date.now(), data }));
+      return data;
+    } catch (err) {
+      console.warn("Live fetch failed, using cache:", err);
+      const cached = JSON.parse(localStorage.getItem("passioCache") || "{}");
+      return cached.data || null;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async function loadData() {
+    statusEl.textContent = "Loading live data…";
+    const data = await fetchPassioData();
+    if (data) {
+      statusEl.textContent = "Live data loaded";
+      statusEl.classList.add("live");
+      // parse data into routes, stops, etc.
+    } else {
+      statusEl.textContent = "Using static routes";
+      statusEl.classList.remove("live");
+      // use staticRawRoutes
+    }
+    // rebuildIndexes(loopEdgesEl.value);
+    // updateUILists();
+  }
+
+  function onFind() {
+    // run findBestPath and render results
+  }
+
+  // --- Event listeners ---
+  findBtn.addEventListener("click", onFind);
+  originEl.addEventListener("keydown", e => { if (e.key === "Enter") onFind(); });
+  destEl.addEventListener("keydown", e => { if (e.key === "Enter") onFind(); });
+  swapBtn.addEventListener("click", () => {
+    const tmp = originEl.value;
+    originEl.value = destEl.value;
+    destEl.value = tmp;
+  });
+  refreshBtn.addEventListener("click", loadData);
+
+  // --- Init ---
+  loadData();
+});
+</script>
+</body>
+</html>
