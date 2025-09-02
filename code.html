@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Rutgers NB Live Bus Route Finder</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+/* --- Styling from earlier version --- */
+body { font-family: system-ui, sans-serif; background: #0b1021; color: #eaf0ff; margin: 0; }
+.wrap { max-width: 1100px; margin: auto; padding: 20px; }
+.panel { background: #121a37; padding: 16px; border-radius: 10px; margin-bottom: 20px; }
+label { font-size: 12px; color: #aab4da; display: block; margin-bottom: 4px; }
+input, select, button { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #1a2550; background: #0f1732; color: #fff; }
+button { cursor: pointer; background: #1a8fff; border: none; }
+.pill { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; margin: 2px; background: #18224a; }
+.result { border-left: 3px solid #6ad1ff; padding-left: 10px; margin-top: 10px; }
+.segment { background: #0d1430; padding: 8px; border-radius: 8px; margin: 6px 0; }
+.error { color: #ff7a7a; }
+.hint { font-size: 12px; color: #7c89b6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Rutgers NB Live Bus Route Finder</h1>
+
+<div class="panel">
+  <label>Origin stop</label>
+  <input list="stops" id="origin" placeholder="e.g., College Avenue Student Center" />
+  <label>Destination stop</label>
+  <input list="stops" id="destination" placeholder="e.g., Busch Student Center" />
+  <datalist id="stops"></datalist>
+  <label>Transfer penalty</label>
+  <select id="transferPenalty">
+    <option value="20" selected>High</option>
+    <option value="10">Medium</option>
+    <option value="5">Low</option>
+    <option value="1">Minimal</option>
+  </select>
+  <button id="findBtn">Find Best Route</button>
+</div>
+
+<div id="results"></div>
+<div id="eta"></div>
+
+<div class="panel">
+  <h3>All Routes</h3>
+  <div id="routePills"></div>
+</div>
+</div>
+
+<script>
+// --- Synonyms & canonicalization ---
+const synonyms = new Map([
+  ["socam apts", "socam apartments"],
+  ["college ave student center", "college avenue student center"],
+  ["bsc", "busch student center"],
+  ["lsc", "livingston student center"],
+  ["jersey mikes arena", "jersey mike's arena"]
+]);
+function canonicalize(s) {
+  if (!s) return "";
+  let k = s.trim().toLowerCase();
+  if (synonyms.has(k)) k = synonyms.get(k);
+  return k.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+// --- Data holders ---
+let routes = {};
+const allStopsSet = new Set();
+let allStops = [];
+const stopToRoutes = new Map();
+const graph = new Map();
+function addEdge(a,b,route) {
+  if (!graph.has(a)) graph.set(a, []);
+  if (!graph.has(b)) graph.set(b, []);
+  graph.get(a).push({to:b, route});
+  graph.get(b).push({to:a, route});
+}
+
+// --- Fetch live data from Passio GO ---
+async function fetchPassioData() {
+  const url = "https://passiogo.com/mapGetData.php?agency=Rutgers";
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Failed to fetch Passio GO data");
+  const data = await res.json();
+  const liveRoutes = {};
+  if (data.routes) {
+    for (const route of data.routes) {
+      const rName = route.name.trim();
+      const stopNames = [];
+      if (route.stops) {
+        for (const stopId of route.stops) {
+          const stopObj = data.stops.find(s => s.id === stopId);
+          if (stopObj) stopNames.push(canonicalize(stopObj.name));
+        }
+      }
+      if (stopNames.length) liveRoutes[rName] = stopNames;
+    }
+  }
+  return { liveRoutes, stopsData: data.stops, vehicles: data.vehicles };
+}
+
+// --- Pathfinding ---
+function findBestPath(origin, destination, transferPenalty) {
+  const start = canonicalize(origin);
+  const goal = canonicalize(destination);
+  if (!graph.has(start) || !graph.has(goal)) return { error: "Unknown stop(s)." };
+  const key = (stop, route) => `${stop}|||${route||""}`;
+  const dist = new Map(), prev = new Map(), pq = [];
+  function push(k,c){ pq.push({k,c}); pq.sort((a,b)=>a.c-b.c); }
+  const startKey = key(start,null);
+  dist.set(startKey,0); push(startKey,0);
+  while (pq.length) {
+    const {k,c} = pq.shift();
+    if (c !== dist.get(k)) continue;
+    const [stop, routeStr] = k.split("|||");
+    if (stop === goal) break;
+    for (const e of graph.get(stop) || []) {
+      const sameRoute = (routeStr === "" || routeStr === e.route);
+      const stepCost = 1 + (sameRoute ? 0 : transferPenalty);
+      const nk = key(e.to, e.route);
+      const nc = c + stepCost;
+      if (nc < (dist.get(nk) ?? Infinity)) {
+        dist.set(nk, nc);
+        prev.set(nk, {prevKey:k, viaRoute:e.route, fromStop:stop});
+        push(nk, nc);
+      }
+    }
+  }
+  let bestGoalKey = null, bestCost = Infinity;
+  for (const [k,c] of dist.entries()) {
+    if (k.startsWith(goal+"|||") && c < bestCost) { bestCost = c; bestGoalKey = k; }
+  }
+  if (!bestGoalKey) return { error: "No path found." };
+  const hops = [];
+  let cur = bestGoalKey;
+  while (cur !== startKey) {
+    const step = prev.get(cur);
+    if (!step) break;
+    hops.push({to:cur.split("|||")[0], from:step.fromStop, route:step.viaRoute});
+    cur = step.prevKey;
+  }
+  hops.reverse();
+  const segments = [];
+  if (hops.length) {
+    let seg = {route:hops[0].route, from:hops[0].from, to:hops[0].to, stops:[hops[0].from,hops[0].to]};
+    for (let i=1;i<hops.length;i++) {
+      if (hops[i].route === seg.route && hops[i].from === seg.stops[seg.stops.length-1]) {
+        seg.to = hops[i].to; seg.stops.push(hops[i].to);
+      } else {
+        segments.push(seg);
+        seg = {route:hops[i].route, from:hops[i].from, to:hops[i].to, stops:[hops[i].from,hops[i].to]};
+      }
+    }
+    segments.push(seg);
+  }
+  return {segments, origin:start, destination:goal, transfers:Math.max(0,segments.length-1), stopsCount:hops.length};
+}
+
+// --- UI ---
+const datalist = document.getElementById("stops");
+const routePillsEl = document.getElementById("routePills");
+const resultsEl = document.getElementById("results");
+const etaEl = document.getElementById("eta");
+
+document.getElementById("findBtn").addEventListener("click", () => {
+  const o = document.getElementById("origin").value;
+  const d = document.getElementById("destination").value;
+  const penalty = Number(document.getElementById("transferPenalty").value);
+  const res = findBestPath(o,d,penalty);
+  if (res.error) {
+    resultsEl.innerHTML = `<div class="error">${res.error}</div>`;
+    etaEl.innerHTML = "";
+    return;
+  }
+  resultsEl.innerHTML = `<div class="result"><h3>${res.origin} → ${res.destination}</h3>
+    <div>
